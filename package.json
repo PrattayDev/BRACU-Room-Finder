@@ -1,0 +1,14 @@
+{
+  "name": "bracu-room-finder-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Scheduled scraper + API backend for BRACU Room Finder",
+  "scripts": {
+    "test:parser": "node scripts/test-parser.js",
+    "sync:local": "node scripts/run-sync-local.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "pdf-parse": "^1.1.1"
+  }
+}
