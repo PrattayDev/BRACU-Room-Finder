@@ -123,6 +123,17 @@ td{padding:9px 8px;border-top:1px solid var(--border);}
 </style>
 </head>
 <body>
+<script>
+// Runs immediately, before the page paints, so there's no flash of
+// light mode before the main script (at the bottom) takes over.
+(function(){
+  try {
+    if (localStorage.getItem('bracu_theme') !== 'light') document.body.classList.add('dark');
+  } catch (err) {
+    document.body.classList.add('dark'); // localStorage unavailable — still default to dark
+  }
+})();
+</script>
 
 <div class="topbar">
   <div class="topbar-inner">
@@ -669,7 +680,13 @@ $('#filters').addEventListener('click', e=>{
 fBuilding.onchange = ()=>{ state.building = fBuilding.value; renderRooms(); };
 $('#fType').onchange = e=>{ state.type = e.target.value; renderRooms(); };
 $('#searchInput').oninput = e=>{ state.search = e.target.value; renderRooms(); };
-$('#darkToggle').onclick = ()=>{ document.body.classList.toggle('dark'); };
+function setThemePreference(theme) {
+  try { localStorage.setItem('bracu_theme', theme); } catch (err) { /* ignore */ }
+}
+$('#darkToggle').onclick = ()=>{
+  document.body.classList.toggle('dark');
+  setThemePreference(document.body.classList.contains('dark') ? 'dark' : 'light');
+};
 
 setInterval(()=>{ if(state.view==='rooms') renderRooms(); if(state.view==='map') renderMap(); }, 30000);
 
