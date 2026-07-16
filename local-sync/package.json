@@ -1,0 +1,12 @@
+{
+  "name": "bracu-local-sync",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Runs the schedule sync using a real headless browser (Puppeteer), to get past BRACU's Cloudflare JS challenge. Meant to run on your own machine, not on Vercel — see README.md.",
+  "scripts": {
+    "sync": "node sync-with-browser.js"
+  },
+  "dependencies": {
+    "puppeteer": "^22.15.0"
+  }
+}

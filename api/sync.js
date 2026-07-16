@@ -20,7 +20,7 @@
 const { resolveCurrentSemester } = require('../lib/semester');
 const { fetchSemesterSchedule } = require('../lib/scraper');
 const { parseSchedule } = require('../lib/parser');
-const { getClient, replaceSemesterSessions, upsertSemesterMeta, getSemesterMeta } = require('../lib/db');
+const { getClient, ensureSemesterRow, replaceSemesterSessions, upsertSemesterMeta, getSemesterMeta } = require('../lib/db');
 
 async function syncOneSemester(supabase, semesterCode) {
   const live = await fetchSemesterSchedule(semesterCode);
@@ -40,6 +40,7 @@ async function syncOneSemester(supabase, semesterCode) {
     return { semesterCode, status: 'parse_failed', failedLineCount: failed.length };
   }
 
+  await ensureSemesterRow(supabase, semesterCode);
   const inserted = await replaceSemesterSessions(supabase, semesterCode, rows);
   await upsertSemesterMeta(supabase, {
     semesterCode,
