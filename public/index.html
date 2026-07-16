@@ -137,7 +137,7 @@ td{padding:9px 8px;border-top:1px solid var(--border);}
       <button data-view="rooms" class="active">Rooms</button>
       <button data-view="map">Map</button>
       <button data-view="favorites">Favorites</button>
-      <button data-view="admin">Admin</button>
+      <button data-view="admin" id="navAdminBtn" style="display:none;">Admin</button>
     </div>
     <div class="searchwrap">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
@@ -163,7 +163,7 @@ td{padding:9px 8px;border-top:1px solid var(--border);}
 
     <div class="filters" id="filters">
       <button class="chip active" data-filter="availableNow">🟢 Available now</button>
-      <div class="chip"><select id="fBuilding"><option value="">All buildings</option></select></div>
+      <div class="chip"><select id="fBuilding"><option value="">All floors</option></select></div>
       <div class="chip"><select id="fType"><option value="">Room type</option><option>Classroom</option><option>Lab</option><option>Theater Room</option></select></div>
     </div>
 
@@ -173,7 +173,7 @@ td{padding:9px 8px;border-top:1px solid var(--border);}
   <div id="view-map" style="display:none">
     <div class="pagehead">
       <h1>Campus blueprint</h1>
-      <p>Buildings that appear in the parsed schedule sample. Tap one to see its rooms.</p>
+      <p>Floors and zones that appear in the schedule. Tap one to see its rooms.</p>
     </div>
     <div class="mapwrap"><div class="mapgrid" id="mapGrid"></div></div>
   </div>
@@ -185,8 +185,19 @@ td{padding:9px 8px;border-top:1px solid var(--border);}
 
   <div id="view-admin" style="display:none">
     <div class="pagehead"><h1>Admin dashboard</h1><p>Data sync status and unresolved student reports.</p></div>
-    <div class="adgrid" id="adminStats"></div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;" id="adminMain"></div>
+    <div id="adminLock" style="display:none; max-width:360px;">
+      <div class="panel">
+        <div class="section-title" style="margin-top:0">Admin access</div>
+        <p style="font-size:13px; color:var(--muted); margin:0 0 14px;">Enter the admin passcode to view sync status and student reports.</p>
+        <input id="adminPasscodeInput" type="password" placeholder="Passcode" style="width:100%; padding:10px 12px; border-radius:10px; border:1px solid var(--border); background:var(--surface-2); color:var(--text); font-size:13.5px; margin-bottom:10px; box-sizing:border-box;">
+        <button class="primarybtn" id="adminUnlockBtn" style="margin-top:0;">Unlock</button>
+        <div id="adminLockError" style="color:var(--red); font-size:12.5px; margin-top:10px; display:none;">Incorrect passcode.</div>
+      </div>
+    </div>
+    <div id="adminContent" style="display:none;">
+      <div class="adgrid" id="adminStats"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;" id="adminMain"></div>
+    </div>
   </div>
 </div>
 
@@ -318,6 +329,20 @@ function roomStatus(room, now){
 /* ---------- Helpers ---------- */
 const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
+
+// BRACU's room-code prefix (e.g. "07A", "09G") isn't a building name —
+// it's floor + zone within a building (floor 7, zone A). A few blocks
+// (Annex, Freedom Tower) don't follow that two-digit+letter pattern,
+// so those fall back to just showing the block code as-is.
+function formatLocation(code){
+  if (!code) return { short: '—', long: '—' };
+  const m = /^(\d{1,2})([A-Z])$/.exec(code);
+  if (m) {
+    const [, floor, zone] = m;
+    return { short: `Floor ${floor} · Zone ${zone}`, long: `Floor ${floor}, Zone ${zone}` };
+  }
+  return { short: `Block ${code}`, long: `Block ${code}` };
+}
 function statusLabel(s){ return s==='avail'?'Available':s==='occ'?'Occupied':'Reserved soon'; }
 function showToast(msg){
   const t = $('#toast'); t.textContent = msg; t.classList.add('show');
@@ -329,9 +354,9 @@ let state = { view:'rooms', search:'', availableNow:true, building:'', type:'' }
 const fBuilding = $('#fBuilding');
 
 function populateBuildingFilter() {
-  fBuilding.innerHTML = '<option value="">All buildings</option>';
+  fBuilding.innerHTML = '<option value="">All floors</option>';
   buildings.forEach(b=>{
-    const o=document.createElement('option'); o.value=b; o.textContent=`Building ${b}`; fBuilding.appendChild(o);
+    const o=document.createElement('option'); o.value=b; o.textContent=formatLocation(b).short; fBuilding.appendChild(o);
   });
 }
 
@@ -372,7 +397,7 @@ function roomCard(room, now){
       </button>
     </div>
     <span class="status-pill ${ledClass}">${statusLabel(st.status)}</span>
-    <div class="card-meta"><span>Building ${room.building}</span><span>${room.type}</span></div>
+    <div class="card-meta"><span>${formatLocation(room.building).short}</span><span>${room.type}</span></div>
     <div class="card-time">${timeLine}</div>
   </div>`;
 }
@@ -418,26 +443,92 @@ function renderMap(){
     const avail = brooms.filter(r=>roomStatus(r, now).status==='avail').length;
     return `<div class="bldg" data-building="${b}">
       <div class="code mono">${b}</div>
+      <div class="foot" style="margin-top:0;margin-bottom:6px;">${formatLocation(b).short}</div>
       <div class="foot">${avail}/${brooms.length} open now</div>
     </div>`;
   }).join('');
 }
 
-let mockReportQueue = [];
-function renderAdmin(){
+let mockReportQueue = []; // used only in offline/demo mode
+let liveReports = [];     // real data from /api/admin-reports once unlocked
+let adminUnlocked = false;
+
+function getAdminPasscode() {
+  try { return sessionStorage.getItem('bracu_admin_passcode') || ''; }
+  catch (err) { return ''; }
+}
+function setAdminPasscode(p) {
+  try { sessionStorage.setItem('bracu_admin_passcode', p); } catch (err) { /* ignore */ }
+}
+
+async function tryUnlockAdmin(passcode) {
+  try {
+    const res = await fetch(`${API_BASE}/api/admin-auth`, {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ passcode }),
+    });
+    const data = await res.json();
+    if (data.ok) { setAdminPasscode(passcode); adminUnlocked = true; return true; }
+    return false;
+  } catch (err) {
+    showToast('Could not reach the server to check the passcode.');
+    return false;
+  }
+}
+
+async function fetchLiveReports() {
+  if (!LIVE_MODE || !CURRENT_SEMESTER) { liveReports = []; return; }
+  try {
+    const res = await fetch(`${API_BASE}/api/admin-reports?semester=${encodeURIComponent(CURRENT_SEMESTER)}`, {
+      headers: { 'x-admin-passcode': getAdminPasscode() },
+    });
+    if (res.status === 401) { adminUnlocked = false; return; }
+    const data = await res.json();
+    liveReports = data.reports || [];
+  } catch (err) {
+    liveReports = [];
+  }
+}
+
+async function renderAdmin(){
+  // Check gate state up front (a stored passcode from an earlier unlock
+  // in this tab still counts — no need to re-enter it on every view).
+  if (!adminUnlocked && getAdminPasscode()) {
+    adminUnlocked = await tryUnlockAdmin(getAdminPasscode());
+  }
+
+  if (!adminUnlocked) {
+    $('#adminLock').style.display = '';
+    $('#adminContent').style.display = 'none';
+    return;
+  }
+  $('#adminLock').style.display = 'none';
+  $('#adminContent').style.display = '';
+
+  if (LIVE_MODE) await fetchLiveReports();
+
   const totalSessions = rooms.reduce((sum, r) => sum + r.sessions.length, 0);
-  const pending = mockReportQueue.filter(q=>q.status==='pending').length;
   $('#adminStats').innerHTML = `
     <div class="stat"><div class="n">${totalSessions}</div><div class="l">${LIVE_MODE ? 'Sessions synced' : 'Sessions (offline slice)'}</div></div>
     <div class="stat"><div class="n">${rooms.length}</div><div class="l">Distinct rooms found</div></div>
-    <div class="stat"><div class="n">${buildings.length}</div><div class="l">Buildings covered</div></div>
+    <div class="stat"><div class="n">${buildings.length}</div><div class="l">Floors/zones covered</div></div>
     <div class="stat ${LIVE_MODE?'g':'r'}"><div class="n">${LIVE_MODE ? 'Live' : 'Offline'}</div><div class="l">Backend connection</div></div>
   `;
-  const reportsHTML = mockReportQueue.length ? mockReportQueue.map(q=>`
-    <tr><td class="mono">${q.room}</td><td>${q.type}</td>
-    <td>${q.status==='pending' ? '<span class="tag pending">Pending</span>' : '<span class="tag ok">Resolved</span>'}</td>
-    <td>${q.status==='pending' ? `<button class="rowbtn" data-resolve="${q.id}">Resolve</button>` : '—'}</td></tr>`).join('')
-    : `<tr><td colspan="4" style="color:var(--muted)">No student reports yet in this session.</td></tr>`;
+
+  let reportsHTML;
+  if (LIVE_MODE) {
+    reportsHTML = liveReports.length ? liveReports.map(r=>`
+      <tr><td class="mono">${r.room}</td><td>${r.type}</td>
+      <td>${r.uniqueReporters}/3 confirmations</td>
+      <td style="color:var(--muted); font-size:11.5px;">${new Date(r.latest).toLocaleTimeString()}</td></tr>`).join('')
+      : `<tr><td colspan="4" style="color:var(--muted)">No student reports in the last 24 hours.</td></tr>`;
+  } else {
+    reportsHTML = mockReportQueue.length ? mockReportQueue.map(q=>`
+      <tr><td class="mono">${q.room}</td><td>${q.type}</td>
+      <td>${q.status==='pending' ? '<span class="tag pending">Pending</span>' : '<span class="tag ok">Resolved</span>'}</td>
+      <td>—</td></tr>`).join('')
+      : `<tr><td colspan="4" style="color:var(--muted)">No student reports yet in this session.</td></tr>`;
+  }
+
   $('#adminMain').innerHTML = `
     <div class="panel">
       <div class="section-title" style="margin-top:0">Data sync</div>
@@ -449,11 +540,18 @@ function renderAdmin(){
       <div class="detail-row"><span class="k">Realtime layer</span><span class="v">Student confirmation (below)</span></div>
     </div>
     <div class="panel">
-      <div class="section-title" style="margin-top:0">Recent student reports</div>
+      <div class="section-title" style="margin-top:0">${LIVE_MODE ? 'Student reports (last 24h)' : 'Student reports (this session)'}</div>
       <table><thead><tr><th>Room</th><th>Report</th><th>Status</th><th></th></tr></thead><tbody>${reportsHTML}</tbody></table>
     </div>`;
-  $$('[data-resolve]').forEach(b=>b.onclick=()=>{ mockReportQueue = mockReportQueue.map(q=>q.id===b.dataset.resolve?{...q,status:'resolved'}:q); renderAdmin(); showToast('Report resolved'); });
 }
+
+$('#adminUnlockBtn').onclick = async () => {
+  const input = $('#adminPasscodeInput');
+  const ok = await tryUnlockAdmin(input.value);
+  if (ok) { input.value = ''; $('#adminLockError').style.display = 'none'; renderAdmin(); }
+  else { $('#adminLockError').style.display = ''; }
+};
+$('#adminPasscodeInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('#adminUnlockBtn').click(); });
 
 function openModal(id){
   const room = rooms.find(r=>r.id===id);
@@ -465,7 +563,7 @@ function openModal(id){
   $('#modalBody').innerHTML = `
     <button class="iconbtn modal-close" id="closeModal">✕</button>
     <span class="plate mono"><span class="led ${st.status}"></span>${room.id}</span>
-    <h2 style="margin-top:12px">Building ${room.building}</h2>
+    <h2 style="margin-top:12px">${formatLocation(room.building).long}</h2>
     <div class="sub">${room.type}</div>
     <div class="detail-row"><span class="k">Status</span><span class="v">${statusLabel(st.status)}</span></div>
     ${st.status==='occ' ? `<div class="detail-row"><span class="k">Current class</span><span class="v">${st.session.course} sec ${st.session.section}</span></div>
@@ -520,12 +618,22 @@ function closeModal(){ $('#overlay').classList.remove('show'); }
 $('#overlay').addEventListener('click', e=>{ if(e.target.id==='overlay') closeModal(); });
 
 function renderAll(){ renderRooms(); renderMap(); renderFavorites(); renderAdmin(); }
+function isAdminRouteEnabled(){ return window.location.hash === '#admin' || sessionStorage.getItem('bracu_admin_route_seen') === '1'; }
+function checkAdminRoute(){
+  if (isAdminRouteEnabled()) {
+    $('#navAdminBtn').style.display = '';
+    try { sessionStorage.setItem('bracu_admin_route_seen', '1'); } catch (err) { /* ignore */ }
+  }
+}
+
 function setView(v){
+  if (v === 'admin' && !isAdminRouteEnabled()) return; // hidden route — silently ignore direct calls
   state.view = v;
   ['rooms','map','favorites','admin'].forEach(x=>$('#view-'+x).style.display = x===v?'':'none');
   $$('#nav button').forEach(b=>b.classList.toggle('active', b.dataset.view===v));
 }
 $('#nav').addEventListener('click', e=>{ const b=e.target.closest('button[data-view]'); if(b) setView(b.dataset.view); });
+window.addEventListener('hashchange', checkAdminRoute);
 
 document.body.addEventListener('click', e=>{
   const fav = e.target.closest('[data-fav]');
@@ -551,10 +659,12 @@ $('#darkToggle').onclick = ()=>{ document.body.classList.toggle('dark'); };
 setInterval(()=>{ if(state.view==='rooms') renderRooms(); if(state.view==='map') renderMap(); }, 30000);
 
 async function init(){
+  checkAdminRoute();
   await loadData();
   populateBuildingFilter();
   renderDataBanner();
   renderAll();
+  if (window.location.hash === '#admin') setView('admin');
 }
 init();
 
