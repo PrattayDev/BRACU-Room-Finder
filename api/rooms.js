@@ -10,6 +10,32 @@
 const { resolveCurrentSemester } = require('../lib/semester');
 const { getClient } = require('../lib/db');
 
+const PAGE_SIZE = 1000; // Supabase/PostgREST's default max rows per request
+
+/**
+ * Fetches every row for a semester, paginating past Supabase's default
+ * 1000-row-per-request cap. Without this, any semester with more than
+ * 1000 sessions silently loses everything past that cutoff — which is
+ * exactly what was happening here (4,553 real sessions, only the first
+ * ~1000 by insertion order were ever returned).
+ */
+async function fetchAllSessions(supabase, semesterCode) {
+  let all = [];
+  let from = 0;
+  while (true) {
+    const { data, error } = await supabase
+      .from('sessions')
+      .select('room_raw, building, room_no, room_type, course, faculty, section, day, start_time, end_time')
+      .eq('semester_code', semesterCode)
+      .range(from, from + PAGE_SIZE - 1);
+    if (error) throw new Error(error.message);
+    all = all.concat(data);
+    if (data.length < PAGE_SIZE) break; // last page was partial — done
+    from += PAGE_SIZE;
+  }
+  return all;
+}
+
 module.exports = async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
@@ -21,12 +47,7 @@ module.exports = async function handler(req, res) {
       semesterCode = current.code;
     }
 
-    const { data: sessions, error } = await supabase
-      .from('sessions')
-      .select('room_raw, building, room_no, room_type, course, faculty, section, day, start_time, end_time')
-      .eq('semester_code', semesterCode);
-
-    if (error) throw new Error(error.message);
+    const sessions = await fetchAllSessions(supabase, semesterCode);
 
     const roomMap = new Map();
     for (const s of sessions) {
@@ -44,6 +65,7 @@ module.exports = async function handler(req, res) {
     res.setHeader('Cache-Control', 's-maxage=120, stale-while-revalidate=300');
     return res.status(200).json({
       semesterCode,
+      totalSessions: sessions.length,
       rooms: Array.from(roomMap.values()),
     });
   } catch (err) {
