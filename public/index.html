@@ -334,13 +334,28 @@ const $$ = s => document.querySelectorAll(s);
 // it's floor + zone within a building (floor 7, zone A). A few blocks
 // (Annex, Freedom Tower) don't follow that two-digit+letter pattern,
 // so those fall back to just showing the block code as-is.
+// Known named blocks that don't follow the floor+zone letter pattern
+// used in the main academic building. FT = Facilities Tower (houses
+// the electronics labs) — its codes are just a floor number, no zone.
+const KNOWN_BLOCKS = {
+  FT: 'Facilities Tower',
+};
+
 function formatLocation(code){
   if (!code) return { short: '—', long: '—' };
-  const m = /^(\d{1,2})([A-Z])$/.exec(code);
-  if (m) {
-    const [, floor, zone] = m;
+
+  const floorZone = /^(\d{1,2})([A-Z])$/.exec(code);
+  if (floorZone) {
+    const [, floor, zone] = floorZone;
     return { short: `Floor ${floor} · Zone ${zone}`, long: `Floor ${floor}, Zone ${zone}` };
   }
+
+  const namedFloor = /^([A-Z]{2})(\d{1,2})$/.exec(code);
+  if (namedFloor && KNOWN_BLOCKS[namedFloor[1]]) {
+    const [, prefix, floor] = namedFloor;
+    return { short: `${KNOWN_BLOCKS[prefix]} · Floor ${floor}`, long: `${KNOWN_BLOCKS[prefix]}, Floor ${floor}` };
+  }
+
   return { short: `Block ${code}`, long: `Block ${code}` };
 }
 function statusLabel(s){ return s==='avail'?'Available':s==='occ'?'Occupied':'Reserved soon'; }
