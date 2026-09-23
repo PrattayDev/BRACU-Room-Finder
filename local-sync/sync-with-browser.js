@@ -31,29 +31,36 @@ const { parseSchedule } = require('../lib/parser');
 const { getClient, ensureSemesterRow, replaceSemesterSessions, upsertSemesterMeta, getSemesterMeta } = require('../lib/db');
 
 async function fetchWithBrowser(page, url, debugLabel) {
-  const res = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
-  let title = await page.title();
-
-  if (title.includes('Just a moment')) {
-    console.log(`  (Cloudflare challenge detected, waiting for it to resolve...)`);
-    // The challenge auto-solves and then navigates away — wait for that
-    // actual navigation to finish, not just for the title to change,
-    // since some Cloudflare setups swap content in-place via XHR rather
-    // than a full page navigation.
-    try {
-      await Promise.race([
-        page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }),
-        page.waitForFunction(() => !document.title.includes('Just a moment'), { timeout: 20000 }),
-      ]);
-    } catch (err) {
-      console.log(`  (challenge wait timed out, proceeding with whatever loaded)`);
-    }
-    // Give the DOM a moment to finish settling either way.
-    await new Promise(r => setTimeout(r, 2000));
+  // Cloudflare sometimes doesn't clear its "Just a moment..." challenge on
+  // the first try, so retry up to 3 times before giving up.
+  let title = '';
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
     title = await page.title();
+
+    if (title.includes('Just a moment')) {
+      console.log(`  (Cloudflare challenge, attempt ${attempt}/3, waiting for it to resolve...)`);
+      try {
+        await page.waitForFunction(() => !document.title.includes('Just a moment'), { timeout: 30000 });
+      } catch (err) {
+        // Either it timed out, or the page navigated mid-wait (which is
+        // what a solved challenge looks like). Re-check the title below.
+      }
+      await new Promise(r => setTimeout(r, 3000));
+      try { title = await page.title(); } catch (err) { title = 'Just a moment...'; }
+    }
+
+    if (!title.includes('Just a moment')) break;
+    if (attempt < 3) await new Promise(r => setTimeout(r, 10000));
   }
 
-  const status = res ? res.status() : null;
+  // Decide the status from what actually loaded, NOT from the first
+  // response. The first response behind Cloudflare is always 403, even
+  // when the challenge later solves and the real page appears.
+  let status = 200;
+  if (title.includes('Just a moment')) status = 403;
+  else if (title.includes('Page not found')) status = 404;
+
   const html = await page.content();
 
   if (debugLabel) {
@@ -104,6 +111,10 @@ async function main() {
         console.log(`\n[${sem.code}] loading ${url} ...`);
         const { html, status } = await fetchWithBrowser(page, url, sem.code);
 
+        if (status === 403) {
+          results.push({ semesterCode: sem.code, status: 'blocked_by_cloudflare', reason: 'Challenge did not clear after 3 tries - run again later' });
+          continue;
+        }
         if (status && status >= 400) {
           results.push({ semesterCode: sem.code, status: 'not_published', reason: `HTTP ${status}` });
           continue;
